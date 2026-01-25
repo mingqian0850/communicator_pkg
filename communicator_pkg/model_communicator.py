@@ -18,14 +18,16 @@ class ModelCommunicator(Node):
         super().__init__('communicator_node')
         self.declare_parameter('image_topic', '/image_rect/compressed')
         self.declare_parameter('model_api_url', 'https://ea5i5e07fh1w-s8tvic3pz6qy.serving.hyperai.host')
-        self.declare_parameter('prompt', 'Move to the monitor, stop in front of it, and avoid any collisions')
+        self.declare_parameter('prompt', 'Move to the fridge with opening door, stop in front of it, and avoid any collisions')
         self.declare_parameter('model_api_health_check', True)
         self.declare_parameter('model_api_timeout_sec', 600)
         self.declare_parameter('result_save_dir', '')
-        self.declare_parameter('publish_path_topic', '/waypoints/path')
+        self.declare_parameter('publish_path_topic', '/waypoints')
         self.declare_parameter('publish_rate_hz', 1.0)
         self.declare_parameter('frame_id', 'map')
         self.declare_parameter('exit_after_request', False)
+        self.declare_parameter('replay', False)
+        self.declare_parameter('request_id', '')
         self._image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self._model_api_url = self.get_parameter('model_api_url').get_parameter_value().string_value
         self._prompt = (
@@ -52,25 +54,40 @@ class ModelCommunicator(Node):
         self._exit_after_request = (
             self.get_parameter('exit_after_request').get_parameter_value().bool_value
         )
+        self._replay = (
+            self.get_parameter('replay').get_parameter_value().bool_value
+        )
+        self._replay_request_id = (
+            self.get_parameter('request_id').get_parameter_value().string_value
+        )
         if not self._result_save_dir:
             self._result_save_dir = os.path.join(self._get_workspace_root(), 'result')
         self._received_first = False
         self._done = False
         self._trajectory_lock = threading.Lock()
         self._trajectory_2d: Optional[List[Tuple[float, float]]] = None
-        self._subscription = self.create_subscription(
-            CompressedImage,
-            self._image_topic,
-            self._on_compressed_image,
-            qos_profile_sensor_data,
-        )
+        self._subscription = None
         self._path_pub = self.create_publisher(Path, self._publish_path_topic, 10)
         self._publish_timer = self.create_timer(
             1.0 / max(self._publish_rate_hz, 0.1),
             self._on_publish_timer,
         )
-        self.get_logger().info(f'Subscribed to image topic: {self._image_topic}')
         self.get_logger().info(f'Publishing path to: {self._publish_path_topic}')
+        if self._replay:
+            if not self._replay_request_id:
+                self.get_logger().error('Replay enabled but request_id is empty.')
+            else:
+                self._load_replay_result(self._replay_request_id)
+            self._received_first = True
+            self.get_logger().info('Replay mode enabled; skipping model API call.')
+        else:
+            self._subscription = self.create_subscription(
+                CompressedImage,
+                self._image_topic,
+                self._on_compressed_image,
+                qos_profile_sensor_data,
+            )
+            self.get_logger().info(f'Subscribed to image topic: {self._image_topic}')
 
     def _on_compressed_image(self, msg: CompressedImage):
         if self._received_first:
@@ -78,7 +95,9 @@ class ModelCommunicator(Node):
         self._received_first = True
         self.get_logger().info('Received CompressedImage message, sending to server.')
         # Stop receiving additional images to avoid redundant callbacks.
-        self.destroy_subscription(self._subscription)
+        if self._subscription is not None:
+            self.destroy_subscription(self._subscription)
+            self._subscription = None
         thread = threading.Thread(
             target=self._call_model_api,
             args=(msg.data,),
@@ -145,7 +164,9 @@ class ModelCommunicator(Node):
         self.get_logger().info('Request finished.')
         if self._exit_after_request:
             self.get_logger().info('exit_after_request=True, shutting down.')
-            self.destroy_subscription(self._subscription)
+            if self._subscription is not None:
+                self.destroy_subscription(self._subscription)
+                self._subscription = None
             self._done = True
 
     def _on_publish_timer(self):
@@ -201,6 +222,29 @@ class ModelCommunicator(Node):
             self.get_logger().error(f'Failed to download mp4: {exc}')
         except OSError as exc:
             self.get_logger().error(f'Failed to save mp4: {exc}')
+
+    def _load_replay_result(self, request_id: str) -> bool:
+        result_path = os.path.join(self._result_save_dir, request_id, f'{request_id}.json')
+        if not os.path.exists(result_path):
+            self.get_logger().error(f'Replay result not found: {result_path}')
+            self._done = True
+            return False
+        try:
+            with open(result_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            trajectory_2d = data.get('trajectory_2d')
+            if not isinstance(trajectory_2d, list):
+                raise ValueError('trajectory_2d missing or invalid in replay result')
+            with self._trajectory_lock:
+                self._trajectory_2d = [
+                    (float(x), float(y)) for x, y in trajectory_2d
+                ]
+            self.get_logger().info(f'Replayed trajectory from: {result_path}')
+            return True
+        except (ValueError, TypeError, OSError) as exc:
+            self.get_logger().error(f'Failed to load replay result: {exc}')
+            self._done = True
+            return False
 
 
 
