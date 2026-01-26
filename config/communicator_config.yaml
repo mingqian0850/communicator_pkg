@@ -1,14 +1,14 @@
 communicator_node:
   ros__parameters:
     model_api_url: https://ea5i5e07fh1w-s8tvic3pz6qy.serving.hyperai.host
-    prompt: "Move to green plant, stop in front of it, and avoid any collisions"
+    prompt: "Move to the plant on the outside corner of the wall, stop in front of it, and avoid any collisions"
     image_topic: /image_rect/compressed
     publish_path_topic: /waypoints/raw
     publish_rate_hz: 1.0
     frame_id: map
     model_api_health_check: true
     model_api_timeout_sec: 600
-    replay: true
+    replay: false
     request_id: "20260123_195256_d1af138e"
 
   

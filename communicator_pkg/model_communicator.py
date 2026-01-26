@@ -182,7 +182,7 @@ class ModelCommunicator(Node):
             pose.header.frame_id = self._frame_id
             pose.header.stamp = path.header.stamp
             pose.pose.position.x = y
-            pose.pose.position.y = x
+            pose.pose.position.y = -x
             pose.pose.orientation.w = 1.0
             path.poses.append(pose)
         self._path_pub.publish(path)
